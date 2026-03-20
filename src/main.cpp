@@ -11,8 +11,8 @@ constexpr uint8_t HX_PINS[kSensorCount][2] = {
 
 // Calibration factors (update after calibration)
 float kScaleFactors[kSensorCount] = {
-    1000.0f,
-    1000.0f,
+    4200.62f,
+    4200.62f,
 };
 
 HX711 scales[kSensorCount];
@@ -51,6 +51,7 @@ void loop() {
       if (scales[i].is_ready()) {
         float weight = scales[i].get_units(1);
         Serial.print(weight, 3); // 3 decimal places
+        Serial.print(" g");
       } else {
         Serial.print("NOT READY");
       }
