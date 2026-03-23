@@ -2,6 +2,7 @@
 #include <SPI.h>
 #include <HX711.h>
 #include <mcp2515.h>
+#include <cstring>
 
 constexpr size_t kSensorCount = 4;
 constexpr bool kReceiverOnline = false;
@@ -19,10 +20,10 @@ constexpr uint8_t HX_PINS[kSensorCount][2] = {
 // Per-sensor scale factors for HX711::set_scale().
 // Replace these with your calibrated values.
 float kScaleFactors[kSensorCount] = {
-    1000.0f,
-    1000.0f,
-    1000.0f,
-    1000.0f,
+    4242.00f,
+    4242.00f,
+    4242.00f,
+    4242.00f,
 };
 
 // MCP2515 CS pin on ESP32. SPI pins use board defaults.
@@ -33,11 +34,16 @@ constexpr uint8_t MCP2515_MOSI_PIN = 23;
 constexpr uint8_t MCP2515_INT_PIN = 4;
 
 // CAN message IDs used to publish each load cell.
-// Averaged weight is sent on this standard ID.
-constexpr uint16_t kCanBaseId = 0x200;
+// Matches Python driver receive filter: 0x100 - 0x1FF (0x100 + bin_id).
+constexpr uint16_t kCanBaseId = 0x100;
+constexpr uint8_t kBinId = 1;
+
+// Status / tare flags expected by Python decoder.
+constexpr uint8_t kStatusOk = 0x00;
+constexpr uint8_t kTareSuccess = 0x01;
 
 // Publish rate in milliseconds.
-constexpr uint32_t kPublishPeriodMs = 50;
+constexpr uint32_t kPublishPeriodMs = 1000;
 
 HX711 scales[kSensorCount];
 MCP2515 mcp2515(MCP2515_CS_PIN);
@@ -75,18 +81,21 @@ bool initializeCan() {
   return true;
 }
 
-void sendWeightFrame(uint8_t contributingSensors, int32_t weightMilliUnits, bool sensorReady) {
+void sendWeightFrame(float rawWeight) {
   struct can_frame frame;
-  frame.can_id = kCanBaseId;
+  frame.can_id = kCanBaseId + kBinId;
   frame.can_dlc = 8;
 
-  frame.data[0] = contributingSensors;
-  frame.data[1] = sensorReady ? 1 : 0;
-  frame.data[2] = static_cast<uint8_t>(weightMilliUnits & 0xFF);
-  frame.data[3] = static_cast<uint8_t>((weightMilliUnits >> 8) & 0xFF);
-  frame.data[4] = static_cast<uint8_t>((weightMilliUnits >> 16) & 0xFF);
-  frame.data[5] = static_cast<uint8_t>((weightMilliUnits >> 24) & 0xFF);
-  frame.data[6] = 0;
+  // Layout expected by Python decoder:
+  // Byte 0: bin_id
+  // Bytes 1-4: float weight (little-endian)
+  // Byte 5: status
+  // Byte 6: tare flag
+  // Byte 7: reserved
+  frame.data[0] = kBinId;
+  std::memcpy(&frame.data[1], &rawWeight, sizeof(float));
+  frame.data[5] = kStatusOk;
+  frame.data[6] = kTareSuccess;
   frame.data[7] = 0;
 
   const MCP2515::ERROR txResult = mcp2515.sendMessage(&frame);
@@ -102,28 +111,14 @@ void sendWeightFrame(uint8_t contributingSensors, int32_t weightMilliUnits, bool
   Serial.printf("TX id=0x%03X failed, err=%d\n", frame.can_id, static_cast<int>(txResult));
 }
 
-void publishAverageWeight() {
-  float sumWeight = 0.0f;
-  uint8_t readyCount = 0;
-
-  for (uint8_t i = 0; i < kSensorCount; ++i) {
-    if (!scales[i].is_ready()) {
-      continue;
-    }
-
-    // Uses HX711 calibration factor to output engineering units.
-    sumWeight += scales[i].get_units(1);
-    ++readyCount;
+void publishSensor1Weight() {
+  float sensor1Weight = 0.0f;
+  if (scales[0].is_ready()) {
+    // Sensor 1 raw weight only for decoder integration.
+    sensor1Weight = scales[0].get_units(1);
   }
 
-  if (readyCount == 0) {
-    sendWeightFrame(0, 0, false);
-    return;
-  }
-
-  const float averageWeight = sumWeight / static_cast<float>(readyCount);
-  const int32_t avgWeightMilliUnits = static_cast<int32_t>(averageWeight * 1000.0f);
-  sendWeightFrame(readyCount, avgWeightMilliUnits, true);
+  sendWeightFrame(sensor1Weight);
 }
 
 void setup() {
@@ -143,7 +138,7 @@ void loop() {
   const uint32_t nowMs = millis();
   if (nowMs - lastPublishMs >= kPublishPeriodMs) {
     lastPublishMs = nowMs;
-    publishAverageWeight();
+    publishSensor1Weight();
   }
 
   delay(1);
