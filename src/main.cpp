@@ -11,8 +11,8 @@ constexpr uint8_t HX_PINS[kSensorCount][2] = {
 
 // Calibration factors (update after calibration)
 float kScaleFactors[kSensorCount] = {
-    4200.62f,
-    4200.62f,
+  4200.62f,
+  4242.00f,
 };
 
 HX711 scales[kSensorCount];
