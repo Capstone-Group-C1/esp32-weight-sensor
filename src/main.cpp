@@ -4,19 +4,22 @@
 #include <mcp2515.h>
 #include <cstring>
 
-constexpr size_t kSensorCount = 1;
-constexpr bool kReceiverOnline = true;
+constexpr size_t kSensorCount = 2;
+const bool kReceiverOnline = true;
 
 // HX711 wiring for each channel: {DOUT, SCK}
-// Currently using only sensor 1 on one ESP32.
+// Sensor 1: DOUT=35, SCK=33
+// Sensor 2: DOUT=34, SCK=32 (avoids SPI pins: 18, 19, 23, 5)
 // DOUT pins use input-capable GPIOs; SCK pins use output-capable GPIOs.
 constexpr uint8_t HX_PINS[kSensorCount][2] = {
     {35, 33},
+    {34, 32},
 };
 
 // Per-sensor scale factors for HX711::set_scale().
 // Replace these with your calibrated values.
 float kScaleFactors[kSensorCount] = {
+    4242.00f,
     4242.00f,
 };
 
@@ -272,16 +275,25 @@ void sendWeightFrame(float rawWeight)
   }
 }
 
-void publishSensor1Weight()
+void publishAverageWeight()
 {
   float sensor1Weight = 0.0f;
+  float sensor2Weight = 0.0f;
+
   if (scales[0].is_ready())
   {
-    // Sensor 1 raw weight only for decoder integration.
     sensor1Weight = scales[0].get_units(1);
   }
 
-  sendWeightFrame(sensor1Weight);
+  if (scales[1].is_ready())
+  {
+    sensor2Weight = scales[1].get_units(1);
+  }
+
+  // Calculate and send average of both sensors
+  float averageWeight = (sensor1Weight + sensor2Weight) / 2.0f;
+  Serial.printf("Sensor1=%.3f Sensor2=%.3f Average=%.3f\n", sensor1Weight, sensor2Weight, averageWeight);
+  sendWeightFrame(averageWeight);
 }
 
 void setup()
@@ -316,7 +328,7 @@ void loop()
   if (nowMs - lastPublishMs >= kPublishPeriodMs)
   {
     lastPublishMs = nowMs;
-    publishSensor1Weight();
+    publishAverageWeight();
   }
 
   delay(1);
