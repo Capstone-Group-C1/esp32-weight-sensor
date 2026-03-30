@@ -4,21 +4,19 @@
 #include <mcp2515.h>
 #include <cstring>
 
-constexpr size_t kSensorCount = 2;
+constexpr size_t kSensorCount = 1;
 constexpr bool kReceiverOnline = true;
 
 // HX711 wiring for each channel: {DOUT, SCK}
-// Hardwired for 2 HX711 modules on one ESP32.
+// Currently using only sensor 1 on one ESP32.
 // DOUT pins use input-capable GPIOs; SCK pins use output-capable GPIOs.
 constexpr uint8_t HX_PINS[kSensorCount][2] = {
-    {34, 32},
     {35, 33},
 };
 
 // Per-sensor scale factors for HX711::set_scale().
 // Replace these with your calibrated values.
 float kScaleFactors[kSensorCount] = {
-    4242.00f,
     4242.00f,
 };
 
