@@ -18,8 +18,8 @@ constexpr uint8_t HX_PINS[kSensorCount][2] = {
 // Per-sensor scale factors for HX711::set_scale().
 // Replace these with your calibrated values.
 float kScaleFactors[kSensorCount] = {
-    4238.00f,
-    4238.00f,
+    4228.0f,
+    4228.0f,
 };
 
 // MCP2515 CS pin on ESP32. SPI pins use board defaults.
