@@ -5,7 +5,6 @@
 #include <cstring>
 
 constexpr size_t kSensorCount = 2;
-const bool kReceiverOnline = true;
 
 // HX711 wiring for each channel: {DOUT, SCK}
 // Sensor 1: DOUT=35, SCK=33
@@ -28,13 +27,11 @@ constexpr uint8_t MCP2515_CS_PIN = 5;
 constexpr uint8_t MCP2515_SCK_PIN = 18;
 constexpr uint8_t MCP2515_MISO_PIN = 19;
 constexpr uint8_t MCP2515_MOSI_PIN = 23;
-constexpr uint8_t MCP2515_INT_PIN = 4;
 
 // CAN message IDs used to publish each load cell.
 // Matches Python driver receive filter: 0x100 - 0x1FF (0x100 + bin_id).
 constexpr uint16_t kCanBaseId = 0x100;
 constexpr uint8_t kBinId = 1;
-constexpr bool kUseLoopbackWhenReceiverOffline = false;
 constexpr bool kAutoSwitchClockOnFailTx = true;
 constexpr uint8_t kFailTxThresholdForClockSwitch = 10;
 
@@ -61,7 +58,6 @@ enum class CanInitStage
 {
   Ok,
   Bitrate,
-  LoopbackMode,
   NormalOneShotMode,
 };
 
@@ -84,27 +80,7 @@ void initializeHx711()
 
     scales[i].begin(dout, sck);
     scales[i].set_scale(kScaleFactors[i]);
-    scales[i].tare();
   }
-}
-
-bool waitForLoopbackFrame(struct can_frame *outFrame, uint32_t timeoutMs)
-{
-  const uint32_t startMs = millis();
-  while ((millis() - startMs) < timeoutMs)
-  {
-    if (mcp2515.checkReceive())
-    {
-      if (mcp2515.readMessage(outFrame) == MCP2515::ERROR_OK)
-      {
-        return true;
-      }
-    }
-
-    delay(1);
-  }
-
-  return false;
 }
 
 void printCanErrorRegs()
@@ -124,7 +100,6 @@ bool initializeCan(CanInitStage *failedStage = nullptr)
 
   // Match the ESP-IDF wiring used in your previous project.
   SPI.begin(MCP2515_SCK_PIN, MCP2515_MISO_PIN, MCP2515_MOSI_PIN, MCP2515_CS_PIN);
-  pinMode(MCP2515_INT_PIN, INPUT_PULLUP);
 
   mcp2515.reset();
 
@@ -135,20 +110,6 @@ bool initializeCan(CanInitStage *failedStage = nullptr)
       *failedStage = CanInitStage::Bitrate;
     }
     return false;
-  }
-
-  if (!kReceiverOnline && kUseLoopbackWhenReceiverOffline)
-  {
-    if (mcp2515.setLoopbackMode() != MCP2515::ERROR_OK)
-    {
-      if (failedStage != nullptr)
-      {
-        *failedStage = CanInitStage::LoopbackMode;
-      }
-      return false;
-    }
-
-    return true;
   }
 
   if (mcp2515.setNormalOneShotMode() != MCP2515::ERROR_OK)
@@ -193,15 +154,6 @@ bool switchClockProfileAndReinitialize()
 
 void sendWeightFrame(float rawWeight)
 {
-  if (!kReceiverOnline && kUseLoopbackWhenReceiverOffline)
-  {
-    struct can_frame staleFrame;
-    while (mcp2515.readMessage(&staleFrame) == MCP2515::ERROR_OK)
-    {
-      // Drain stale loopback frames so next read corresponds to this TX.
-    }
-  }
-
   struct can_frame frame;
   frame.can_id = kCanBaseId + kBinId;
   frame.can_dlc = 8;
@@ -224,12 +176,6 @@ void sendWeightFrame(float rawWeight)
     Serial.printf("TX id=0x%03X failed, err=%d\n", frame.can_id, static_cast<int>(txResult));
     printCanErrorRegs();
 
-    if (!kReceiverOnline && txResult == MCP2515::ERROR_FAILTX)
-    {
-      Serial.println("No ACK expected yet (receiver offline). err=4 is expected in one-shot mode.");
-      return;
-    }
-
     if (txResult == MCP2515::ERROR_FAILTX)
     {
       ++failTxStreak;
@@ -251,32 +197,6 @@ void sendWeightFrame(float rawWeight)
 
   failTxStreak = 0;
   Serial.printf("TX id=0x%03X weight=%.3f\n", frame.can_id, rawWeight);
-
-  if (!kReceiverOnline && kUseLoopbackWhenReceiverOffline)
-  {
-    struct can_frame rxFrame;
-    if (waitForLoopbackFrame(&rxFrame, 20))
-    {
-      float loopbackWeight = 0.0f;
-      std::memcpy(&loopbackWeight, &rxFrame.data[1], sizeof(float));
-      if (rxFrame.can_id == frame.can_id && rxFrame.data[0] == kBinId)
-      {
-        Serial.printf("RX loopback id=0x%03X weight=%.3f\n", rxFrame.can_id, loopbackWeight);
-      }
-      else
-      {
-        Serial.printf("RX loopback mismatch: id=0x%03X bin_id=%u expected=0x%03X/%u\n",
-                      rxFrame.can_id,
-                      rxFrame.data[0],
-                      frame.can_id,
-                      kBinId);
-      }
-    }
-    else
-    {
-      Serial.println("Loopback RX frame not available.");
-    }
-  }
 }
 
 bool readCombinedSample(float *outCombinedWeight)
@@ -291,10 +211,8 @@ bool readCombinedSample(float *outCombinedWeight)
     return false;
   }
 
-  float sensor1Weight = 0.0f;
-  float sensor2Weight = 0.0f;
-  sensor1Weight = scales[0].get_units(1);
-  sensor2Weight = scales[1].get_units(1);
+  const float sensor1Weight = scales[0].get_units(1);
+  const float sensor2Weight = scales[1].get_units(1);
 
   // Current calibration/wiring yields negative values for load, so invert both.
   *outCombinedWeight = (-sensor1Weight) + (-sensor2Weight);
@@ -316,14 +234,7 @@ void setup()
   }
   else
   {
-    if (!kReceiverOnline && kUseLoopbackWhenReceiverOffline)
-    {
-      Serial.printf("CAN init OK (loopback mode, no external ACK required, clock=%s)\n", activeClockName());
-    }
-    else
-    {
-      Serial.printf("CAN init OK (normal one-shot mode, clock=%s)\n", activeClockName());
-    }
+    Serial.printf("CAN init OK (normal one-shot mode, clock=%s)\n", activeClockName());
   }
 }
 
