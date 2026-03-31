@@ -19,8 +19,8 @@ constexpr uint8_t HX_PINS[kSensorCount][2] = {
 // Per-sensor scale factors for HX711::set_scale().
 // Replace these with your calibrated values.
 float kScaleFactors[kSensorCount] = {
-    4242.00f,
-    4242.00f,
+    4238.00f,
+    4238.00f,
 };
 
 // MCP2515 CS pin on ESP32. SPI pins use board defaults.
@@ -43,12 +43,16 @@ constexpr uint8_t kStatusOk = 0x00;
 constexpr uint8_t kTareSuccess = 0x01;
 
 // Publish rate in milliseconds.
-constexpr uint32_t kPublishPeriodMs = 1000;
+constexpr uint32_t kSamplePeriodMs = 50;
+constexpr uint32_t kAverageWindowMs = 1000;
 
 HX711 scales[kSensorCount];
 MCP2515 mcp2515(MCP2515_CS_PIN);
 
-uint32_t lastPublishMs = 0;
+uint32_t lastSampleMs = 0;
+uint32_t windowStartMs = 0;
+float windowSum = 0.0f;
+uint32_t windowSampleCount = 0;
 uint8_t failTxStreak = 0;
 bool using16MHzClock = false;
 bool clockFallbackAttempted = false;
@@ -275,25 +279,26 @@ void sendWeightFrame(float rawWeight)
   }
 }
 
-void publishAverageWeight()
+bool readCombinedSample(float *outCombinedWeight)
 {
+  if (outCombinedWeight == nullptr)
+  {
+    return false;
+  }
+
+  if (!scales[0].is_ready() || !scales[1].is_ready())
+  {
+    return false;
+  }
+
   float sensor1Weight = 0.0f;
   float sensor2Weight = 0.0f;
+  sensor1Weight = scales[0].get_units(1);
+  sensor2Weight = scales[1].get_units(1);
 
-  if (scales[0].is_ready())
-  {
-    sensor1Weight = scales[0].get_units(1);
-  }
-
-  if (scales[1].is_ready())
-  {
-    sensor2Weight = scales[1].get_units(1);
-  }
-
-  // Calculate and send average of both sensors
-  float averageWeight = (sensor1Weight + sensor2Weight) / 2.0f;
-  Serial.printf("Sensor1=%.3f Sensor2=%.3f Average=%.3f\n", sensor1Weight, sensor2Weight, averageWeight);
-  sendWeightFrame(averageWeight);
+  // Current calibration/wiring yields negative values for load, so invert both.
+  *outCombinedWeight = (-sensor1Weight) + (-sensor2Weight);
+  return true;
 }
 
 void setup()
@@ -325,10 +330,39 @@ void setup()
 void loop()
 {
   const uint32_t nowMs = millis();
-  if (nowMs - lastPublishMs >= kPublishPeriodMs)
+
+  if (nowMs - lastSampleMs >= kSamplePeriodMs)
   {
-    lastPublishMs = nowMs;
-    publishAverageWeight();
+    lastSampleMs = nowMs;
+
+    float combinedSample = 0.0f;
+    if (readCombinedSample(&combinedSample))
+    {
+      windowSum += combinedSample;
+      ++windowSampleCount;
+    }
+  }
+
+  if (nowMs - windowStartMs >= kAverageWindowMs)
+  {
+    if (windowSampleCount > 0)
+    {
+      const float averageWeight = windowSum / static_cast<float>(windowSampleCount);
+      Serial.printf("TX window avg=%.3f from %lu samples over %lu ms\n",
+                    averageWeight,
+                    static_cast<unsigned long>(windowSampleCount),
+                    static_cast<unsigned long>(kAverageWindowMs));
+      sendWeightFrame(averageWeight);
+    }
+    else
+    {
+      Serial.printf("No valid samples in %lu ms window; skipping TX\n",
+                    static_cast<unsigned long>(kAverageWindowMs));
+    }
+
+    windowStartMs = nowMs;
+    windowSum = 0.0f;
+    windowSampleCount = 0;
   }
 
   delay(1);
