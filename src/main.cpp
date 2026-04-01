@@ -39,9 +39,12 @@ constexpr uint8_t kFailTxThresholdForClockSwitch = 10;
 constexpr uint8_t kStatusOk = 0x00;
 constexpr uint8_t kTareSuccess = 0x01;
 
-// Publish rate in milliseconds.
-constexpr uint32_t kSamplePeriodMs = 50;
-constexpr uint32_t kAverageWindowMs = 1000;
+// Sampling/transmit cadence in milliseconds.
+// This yields a 20 Hz publish rate (every 50 ms) with ~5 samples per average,
+// which improves UI responsiveness while keeping CAN load very low at 500 kbps.
+constexpr uint32_t kSamplePeriodMs = 10;
+constexpr uint32_t kAverageWindowMs = 50;
+constexpr bool kLogEveryPublish = false;
 
 HX711 scales[kSensorCount];
 MCP2515 mcp2515(MCP2515_CS_PIN);
@@ -196,7 +199,10 @@ void sendWeightFrame(float rawWeight)
   }
 
   failTxStreak = 0;
-  Serial.printf("TX id=0x%03X weight=%.3f\n", frame.can_id, rawWeight);
+  if (kLogEveryPublish)
+  {
+    Serial.printf("TX id=0x%03X weight=%.3f\n", frame.can_id, rawWeight);
+  }
 }
 
 bool readCombinedSample(float *outCombinedWeight)
@@ -259,16 +265,22 @@ void loop()
     if (windowSampleCount > 0)
     {
       const float averageWeight = windowSum / static_cast<float>(windowSampleCount);
-      Serial.printf("TX window avg=%.3f from %lu samples over %lu ms\n",
-                    averageWeight,
-                    static_cast<unsigned long>(windowSampleCount),
-                    static_cast<unsigned long>(kAverageWindowMs));
+      if (kLogEveryPublish)
+      {
+        Serial.printf("TX window avg=%.3f from %lu samples over %lu ms\n",
+                      averageWeight,
+                      static_cast<unsigned long>(windowSampleCount),
+                      static_cast<unsigned long>(kAverageWindowMs));
+      }
       sendWeightFrame(averageWeight);
     }
     else
     {
-      Serial.printf("No valid samples in %lu ms window; skipping TX\n",
-                    static_cast<unsigned long>(kAverageWindowMs));
+      if (kLogEveryPublish)
+      {
+        Serial.printf("No valid samples in %lu ms window; skipping TX\n",
+                      static_cast<unsigned long>(kAverageWindowMs));
+      }
     }
 
     windowStartMs = nowMs;
